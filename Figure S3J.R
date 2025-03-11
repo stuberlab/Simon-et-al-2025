@@ -1,0 +1,116 @@
+library(Seurat)
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(xlsx)
+library(tidyr)
+library(ggplot2)
+library(cowplot)
+library(ggrepel)
+
+# Load in data
+LS.integrated<-readRDS(file = "LS_integrated.rds")
+LS_sal<-readRDS(file = "LS_sal.rds")
+LS_mor<-readRDS(file = "LS_mor.rds")
+LS_nal<-readRDS(file = "LS_nal.rds")
+LS_one_mor<-readRDS( file = "LS_one_mor.rds")
+LS_nal_no_mor<-readRDS( file = "LS_nal_no_mor.rds")
+
+LS.integrated <- NormalizeData(LS.integrated)
+table(Idents(LS.integrated))
+new.ident <- c("Gaba1","Gaba2","Gaba3","Gaba4","Gaba5","Gaba6","Gaba7","Glu1","Gaba8","Gaba9","Gaba10","Glu2","Gaba11","Gaba12")
+names(x = new.ident) <- levels(x =LS.integrated)
+LS.integrated<- RenameIdents(object =LS.integrated, new.ident)
+for (i in 1:length(new.ident)){
+  assign(paste(new.ident[i],"_barcode",sep=""),colnames(LS.integrated@assays$RNA@data[,which(Idents(object=LS.integrated) %in% new.ident[i])]))# this gives all barcodes in cluster
+  assign(paste(new.ident[i],"_barcode_LS_sal",sep=""),intersect(colnames(LS_sal@assays$RNA@data),eval(parse(text = paste(new.ident[i],"_barcode",sep="")))))
+  assign(paste(new.ident[i],"_barcode_LS_mor",sep=""),intersect(colnames(LS_mor@assays$RNA@data),eval(parse(text = paste(new.ident[i],"_barcode",sep="")))))
+  assign(paste(new.ident[i],"_barcode_LS_nal",sep=""),intersect(colnames(LS_nal@assays$RNA@data),eval(parse(text = paste(new.ident[i],"_barcode",sep="")))))
+  assign(paste(new.ident[i],"_barcode_LS_one_mor",sep=""),intersect(colnames(LS_one_mor@assays$RNA@data),eval(parse(text = paste(new.ident[i],"_barcode",sep="")))))
+  assign(paste(new.ident[i],"_barcode_LS_nal_no_mor",sep=""),intersect(colnames(LS_nal_no_mor@assays$RNA@data),eval(parse(text = paste(new.ident[i],"_barcode",sep="")))))
+}
+table(Idents(LS.integrated))
+
+# 1. subset Nts+ cells
+Nts.pos <- colnames(subset(LS.integrated, Nts>0))
+Nts <- subset(LS.integrated, cells=Nts.pos)
+
+# 2. subset "subtypes" based on expression of at least one copy of each gene
+Adra1a.cells <- colnames(subset(Nts,   Adra1a > 0 ))
+Drd2.cells <- colnames(subset(Nts,  Drd2 > 0 ))
+Crhr2.cells <- colnames(subset(Nts, Crhr2 > 0))
+Met.cells <- colnames(subset(Nts, Met > 0))
+Glp2r.cells <- colnames(subset(Nts, Glp2r > 0))
+Ntrk2.cells <- colnames(subset(Nts, Ntrk2 > 0))
+Adrb1.cells <- colnames(subset(Nts, Adrb1 > 0))
+All.cells <- unique(c(colnames(Nts)))
+All.cells <- subset(LS.integrated, cells=All.cells)
+
+# 3. define IEGs for analysis
+IEG <- c('Cell_type','Gem','Pim1','Nptx2','Noct','Homer1','Rheb','Mbnl2')
+
+# 4. grab data
+assay.data<-data.frame(GetAssayData(All.cells, slot='data'))
+assay.data.sub <- assay.data[rownames(assay.data) %in% IEG,]
+IEG.data<-data.frame(apply(assay.data.sub, FUN=mean, MARGIN=2))
+
+# 5. define p testing function
+p.test.exp <- function(cells_con, cells_stim, cells, data) {
+  
+  p.val<-vector()
+  log2FC<-vector()
+  
+  for (i in cells){
+    cells.con <- intersect(colnames(cells_con), eval(as.symbol(paste(i,'_barcode',sep=''))))
+    cells.stim <- intersect(colnames(cells_stim), eval(as.symbol(paste(i,'_barcode',sep=''))))
+    data.con <- data[rownames(IEG.data) %in% cells.con,]
+    data.stim <- data[rownames(IEG.data) %in% cells.stim,]
+    
+    #before averaging the 'data' slot, convert from log to cartesian expression
+    mean.stim <- mean(expm1(data.stim))
+    mean.con <- mean(expm1(data.con))
+    #to compute the log2FC difference between stim and con
+    mean.diff <- log2(mean.stim) - log2(mean.con)
+    log2FC[i] <- mean.diff
+    
+    p <- wilcox.test(data.con, data.stim)$p.value*length(cells)
+    p <- ifelse(p > 1, 1, p)
+    p.val[i] <- p
+    
+  }
+  
+  return(data.frame(p.val,log2FC))
+  
+}
+
+# 6. barcodes for subtypes
+Cell_type <- c('Drd2','Adra1a','Crhr2','Met','Adrb1','Ntrk2','Glp2r')
+Drd2_barcode <- Drd2.cells
+Adra1a_barcode <- Adra1a.cells
+Crhr2_barcode <- Crhr2.cells
+Met_barcode <- Met.cells
+Glp2r_barcode <- Glp2r.cells
+Ntrk2_barcode <- Ntrk2.cells
+Adrb1_barcode <- Adrb1.cells
+
+LS.nal <-p.test.exp(cells_con=LS_mor, cells_stim=LS_nal, cells=Cell_type, data=IEG.data)
+LS.nal$id <- rownames(LS.nal)
+LS.nal$sig <- ifelse(LS.nal$p.val < 0.05, 'red','black')
+
+ggplot(LS.nal, aes(x=log2FC, y=-log2(p.val), label=id)) +
+  ggtitle("NAL-induced IEGs") +
+  geom_point(size=0.5, color=LS.nal$sig) + 
+  scale_color_manual(values = c("TRUE" = "red", "FALSE" = "black")) +
+  geom_text_repel(size=2) +
+  theme_classic() + 
+  theme(axis.line = element_blank(), 
+        plot.title=element_blank(),
+        panel.background = element_rect(colour = "black", size=.25, fill=NA),
+        axis.text = element_text(size=6),
+        axis.title = element_text(size=6),
+        axis.ticks = element_line(size=0.25)) +
+  xlab("logFC expression") + 
+  ylab("-log2(p-value)") +
+  geom_vline(xintercept=0, size=0.25) +
+  geom_hline(yintercept=-log2(0.05), linetype='dashed', size=0.25) +
+  ylim(c(0,NA))
